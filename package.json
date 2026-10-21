@@ -1,0 +1,52 @@
+{
+  "name": "@showjason/pi-task-tracker",
+  "version": "0.1.0",
+  "description": "A task tracker for SREs running parallel projects in Pi: binds each session to a task and records goal-relevant progress automatically in local SQLite",
+  "main": "./index.ts",
+  "files": [
+    "index.ts",
+    "src"
+  ],
+  "scripts": {
+    "test": "vitest --run",
+    "check": "tsc --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "format": "prettier --write 'index.ts' 'src/**/*.ts' 'test/**/*.ts'",
+    "format:check": "prettier --check 'index.ts' 'src/**/*.ts' 'test/**/*.ts'"
+  },
+  "keywords": [
+    "pi",
+    "pi-agent",
+    "pi-extension",
+    "sre",
+    "task-tracker"
+  ],
+  "author": "showjason",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/showjason/pi-task-tracker.git"
+  },
+  "bugs": {
+    "url": "https://github.com/showjason/pi-task-tracker/issues"
+  },
+  "homepage": "https://github.com/showjason/pi-task-tracker#readme",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "dependencies": {
+    "@typesafe-ai/sdk": "^0.6.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.85.1",
+    "prettier": "^3.9.9",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
+  }
+}
