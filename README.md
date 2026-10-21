@@ -1,4 +1,4 @@
-# pi-agent-task-tracker
+# pi-task-tracker
 
 As an SRE I juggle multiple projects at once. They differ in tech stack, in
 the engineers I talk to, and in planning cycles. Every switch forces a
@@ -60,7 +60,7 @@ Use this when developing the extension:
 
 ```sh
 git clone git@github.com:showjason/pi-task-tracker.git
-cd pi-agent-task-tracker
+cd pi-task-tracker
 npm ci
 pi install "$PWD"
 ```
