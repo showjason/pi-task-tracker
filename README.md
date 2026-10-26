@@ -18,7 +18,7 @@ account.
 Install for your Pi account:
 
 ```sh
-pi install npm:@showjason/pi-task-tracker@beta
+pi install npm:@showjason/pi-task-tracker
 ```
 
 Confirm that Pi sees it:
@@ -43,7 +43,7 @@ goal-relevant changes. Run `/tasks` at any time to inspect your tasks.
 Run this from the project directory:
 
 ```sh
-pi install --local npm:@showjason/pi-task-tracker@beta
+pi install --local npm:@showjason/pi-task-tracker
 ```
 
 Pi asks you to trust the project before it loads project-local extensions.

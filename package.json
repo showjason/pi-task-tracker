@@ -1,6 +1,6 @@
 {
   "name": "@showjason/pi-task-tracker",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A task tracker for SREs running parallel projects in Pi: binds each session to a task and records goal-relevant progress automatically in local SQLite",
   "main": "./index.ts",
   "files": [
