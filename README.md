@@ -72,7 +72,7 @@ extension files.
 
 - Pi with package installation support. This extension is tested with
   `@earendil-works/pi-coding-agent` 0.85.1.
-- Node.js 22.19 or later when Pi is installed through npm or used from source.
+- Node.js 22.23.4 or later when Pi is installed through npm or used from source.
 - A working Pi model provider. Run `/login` in Pi, or configure the provider
   before using the extension.
 - The `pi` command must be on `PATH`. The extension starts a child Pi process
