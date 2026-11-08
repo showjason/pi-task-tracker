@@ -1,7 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process"
 import { fileURLToPath } from "node:url"
-import type { SummaryJob } from "./type.ts"
-import type { JobQueue } from "./tracker.ts"
+import type { PreparedSummaryJob } from "./type.ts"
+import { prepareSummaryJob, runPreparedJob, type JobQueue } from "./tracker.ts"
+import type { TaskManager } from "./sqlite.ts"
 import { summaryLogger, type SummaryLogger } from "./logger.ts"
 
 const summaryUpdateToolPath = fileURLToPath(new URL("./tools/summary-update-tool.ts", import.meta.url))
@@ -27,6 +28,8 @@ export interface SummaryOptions {
     summarizerProvider: string
     summarizerModel: string
     jobQueue: JobQueue
+    taskManager: TaskManager
+    useGate: boolean
 }
 
 export class Summarizer {
@@ -84,24 +87,26 @@ export class Summarizer {
             }
 
             const childLog = summaryLogger.child({ sessionId: job.sessionId, endEntryId: job.endEntryId })
+            let success = false
             try {
-                childLog.info("summary_job_started", { reason: job.summaryReason })
-                await this.runSummaryAgent(job, childLog)
+                const preparedJob = prepareSummaryJob(this.options.taskManager, job)
+                if (preparedJob !== undefined) {
+                    childLog.info("summary_job_started", { reason: job.summaryReason })
+                    await runPreparedJob(this.options.taskManager, this, preparedJob, this.options.useGate, childLog)
+                }
+                success = true
             } catch (error) {
                 childLog.error("summary_job_failed", {
                     reason: job.summaryReason,
                     error: String(error),
                 })
             } finally {
-                this.options.jobQueue.complete(job)
+                this.options.jobQueue.complete(job, success)
             }
         }
     }
 
-    public async runSummaryAgent(job: SummaryJob, log: SummaryLogger): Promise<void> {
-        if (job.lastSummarizedEntryId === null) {
-            throw new Error("Summary job has no binding watermark")
-        }
+    public async runSummaryAgent(job: PreparedSummaryJob, log: SummaryLogger): Promise<void> {
         const startedAt = Date.now()
         log.info("summary_agent_spawned", {
             provider: this.options.summarizerProvider,
@@ -195,7 +200,7 @@ export class Summarizer {
     }
 }
 
-export function buildSummaryPrompt(job: SummaryJob): string {
+export function buildSummaryPrompt(job: PreparedSummaryJob): string {
     const prompt = DEFAULT_SUMMARY_PROMPT.join("\n")
     return [
         prompt,

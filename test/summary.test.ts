@@ -3,12 +3,13 @@ import { PassThrough } from "node:stream"
 import type { ChildProcess } from "node:child_process"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { SummaryLogger } from "../src/logger.ts"
-import type { SummaryJob } from "../src/type.ts"
+import type { PreparedSummaryJob } from "../src/type.ts"
 import type { JobQueue } from "../src/tracker.ts"
+import { createFakeSessionManager } from "./helpers.ts"
 
 type MockChildProcess = ChildProcess & { stdout: PassThrough; stderr: PassThrough }
 
-const job: SummaryJob = {
+const job: PreparedSummaryJob = {
     sessionId: "session-1",
     taskTitle: "deploy-api",
     goal: "ship it",
@@ -20,6 +21,7 @@ const job: SummaryJob = {
     entries: [],
     summaryReason: "turn",
     endEntryId: "e2",
+    session: createFakeSessionManager(),
 }
 
 function createChild(): MockChildProcess {
@@ -50,6 +52,8 @@ async function loadSummarizer(child: ChildProcess) {
         summarizerProvider: "test-provider",
         summarizerModel: "test-model",
         jobQueue: {} as JobQueue,
+        taskManager: {} as never,
+        useGate: false,
     })
 }
 

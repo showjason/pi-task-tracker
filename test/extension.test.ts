@@ -4,7 +4,7 @@ import { join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 import { afterEach, beforeEach, beforeAll, describe, expect, it, vi } from "vitest"
 import { initSchema, TaskManager } from "../src/sqlite.ts"
-import type { JobQueue } from "../src/tracker.ts"
+import { prepareSummaryJob, type JobQueue } from "../src/tracker.ts"
 import type { SummaryJob } from "../src/type.ts"
 import {
     type FakeApi,
@@ -76,10 +76,12 @@ function mockSummarizer(run: (job: SummaryJob) => void | Promise<void>, onStop?:
     vi.doMock("../src/summary.ts", () => ({
         Summarizer: class {
             private readonly queue: JobQueue
+            private readonly taskManager: TaskManager
             private consumer: Promise<void> | undefined
 
-            constructor(options: { jobQueue: JobQueue }) {
+            constructor(options: { jobQueue: JobQueue; taskManager: TaskManager }) {
                 this.queue = options.jobQueue
+                this.taskManager = options.taskManager
             }
 
             start(): void {
@@ -100,8 +102,16 @@ function mockSummarizer(run: (job: SummaryJob) => void | Promise<void>, onStop?:
                 while (true) {
                     const job = await this.queue.dequeue()
                     if (job === undefined) return
-                    await run(job)
-                    this.queue.complete(job)
+                    let success = false
+                    try {
+                        const preparedJob = prepareSummaryJob(this.taskManager, job)
+                        if (preparedJob !== undefined) await run(preparedJob)
+                        success = true
+                    } catch {
+                        success = false
+                    } finally {
+                        this.queue.complete(job, success)
+                    }
                 }
             }
         },
@@ -186,6 +196,36 @@ describe("tracker extension factory", () => {
         }
     })
 
+    it("cancels tree navigation when the tree summary fails", async () => {
+        mockSummarizer(async (job) => {
+            if (job.summaryReason === "tree") throw new Error("summary failed")
+        })
+        const fakeApi = createFakeApi()
+        const factory = await loadExtension()
+        factory(fakeApi.api)
+
+        const db = new DatabaseSync(join(tempDir, "tracker.db"))
+        try {
+            initSchema(db)
+            const taskManager = new TaskManager(db)
+            taskManager.createTask({ title: "deploy-api" })
+            const branch = settledBranch()
+            taskManager.bindTask(
+                { sessionId: "session-1", title: "deploy-api" },
+                { sessionFile: "/sessions/s1.jsonl", cwd: "/tmp", bindingBaselineEntryId: branch[0]!.id },
+            )
+
+            await expect(
+                fakeApi.emit(
+                    "session_before_tree",
+                    createFakeContext(createFakeSessionManager({ sessionFile: "/sessions/s1.jsonl", branch })),
+                ),
+            ).resolves.toEqual([{ cancel: true }])
+        } finally {
+            db.close()
+        }
+    })
+
     it("drains the queue and stops the summarizer on session_shutdown", async () => {
         // Seed a bound session directly in the extension's own database.
         const db = new DatabaseSync(join(tempDir, "tracker.db"))
@@ -210,7 +250,7 @@ describe("tracker extension factory", () => {
                     taskManager.applySummaryAndAdvanceWatermark({
                         sessionId: job.sessionId,
                         title: job.taskTitle,
-                        expectedRevision: job.expectedRevision,
+                        expectedRevision: job.expectedRevision!,
                         expectedLastSummarizedEntryId: job.lastSummarizedEntryId ?? "",
                         endEntryId: job.endEntryId,
                         shouldUpdateTask: false,
@@ -230,7 +270,7 @@ describe("tracker extension factory", () => {
                 createFakeContext(createFakeSessionManager({ sessionFile: "/sessions/s1.jsonl", branch })),
             )
 
-            expect(calls).toEqual(["run:quit", "stopAndWait"])
+            expect(calls).toEqual(["stopAndWait", "run:quit"])
             const binding = taskManager.getActiveBinding("session-1")
             expect(binding).toBeDefined()
             expect(binding!.lastSummarizedEntryId).toBe(branch.at(-1)!.id)

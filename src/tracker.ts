@@ -1,4 +1,4 @@
-import type { SummaryJob, SummaryReason } from "./type.ts"
+import type { PreparedSummaryJob, SummaryJob, SummaryReason } from "./type.ts"
 import type { TaskManager } from "./sqlite.ts"
 import type { Summarizer } from "./summary.ts"
 import { trackerLogger, summaryLogger } from "./logger.ts"
@@ -6,6 +6,7 @@ import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-a
 import { gateChecker } from "./gate.ts"
 
 type ReadonlySessionManager = ExtensionContext["sessionManager"]
+type SummarySession = Pick<ReadonlySessionManager, "getSessionId" | "getLeafId" | "getEntry">
 
 export class JobQueue {
     private readonly jobs: SummaryJob[] = []
@@ -14,10 +15,10 @@ export class JobQueue {
     private closed = false
 
     public enqueue(job: SummaryJob): boolean {
-        if (this.closed || this.queuedEntryIds.has(job.endEntryId)) {
+        if (this.closed || (job.summaryReason !== "tree" && this.queuedEntryIds.has(job.endEntryId))) {
             return false
         }
-        this.queuedEntryIds.add(job.endEntryId)
+        if (job.summaryReason !== "tree") this.queuedEntryIds.add(job.endEntryId)
         const waitingConsumer = this.waitingConsumers.shift()
         if (waitingConsumer !== undefined) {
             waitingConsumer(job)
@@ -40,12 +41,14 @@ export class JobQueue {
         return Promise.resolve(job)
     }
 
-    public complete(job: SummaryJob): void {
-        this.queuedEntryIds.delete(job.endEntryId)
+    public complete(job: SummaryJob, success = true): void {
+        if (job.summaryReason !== "tree") this.queuedEntryIds.delete(job.endEntryId)
+        job.resolve?.(success)
     }
 
     public close(): void {
         this.closed = true
+        this.jobs.forEach((job) => job.resolve?.(false))
         this.jobs.length = 0
         this.queuedEntryIds.clear()
         this.waitingConsumers.forEach((resolve) => resolve(undefined))
@@ -106,43 +109,42 @@ export class Tracker {
         this.turnCount = 0
     }
 
-    async flush(ctx: ExtensionContext, reason: SummaryReason): Promise<void> {
-        // Fast lane on quit: run the summary agent directly instead of
-        // enqueueing, so the final increment is summarized immediately.
+    async flush(ctx: ExtensionContext, reason: SummaryReason): Promise<boolean> {
         if (reason === "quit") {
-            const result = createSummaryJob(this.options.taskManager, ctx.sessionManager, reason)
-            if (!result.ok) {
-                summaryLogger.debug("summary_noop", {
-                    sessionId: ctx.sessionManager.getSessionId(),
-                    reason,
-                    cause: result.cause,
-                })
+            const job = createSummaryJob(this.options.taskManager, ctx.sessionManager, reason)
+            if (job === undefined) {
                 this.turnCount = 0
-                return
+                return true
             }
-            const job = result.job
-
-            summaryLogger.info("summary_job_created", {
-                sessionId: ctx.sessionManager.getSessionId(),
-                reason,
-                endEntryId: result.job.endEntryId,
-                entryCount: result.job.entries.length,
-            })
-
             const log = summaryLogger.child({ sessionId: job.sessionId, endEntryId: job.endEntryId })
             try {
-                await this.options.summarizer.runSummaryAgent(job, log)
+                const preparedJob = prepareSummaryJob(this.options.taskManager, job)
+                if (preparedJob !== undefined) {
+                    await runPreparedJob(this.options.taskManager, this.options.summarizer, preparedJob, false, log)
+                }
+                return true
             } catch (error) {
                 summaryLogger.error("summary_job_failed", {
-                    reason: job.summaryReason,
+                    reason,
                     error: String(error),
                 })
+                return false
+            } finally {
+                this.turnCount = 0
             }
-            this.turnCount = 0
-            return
         }
-        await this.enqueueSummary(ctx.sessionManager, reason)
+        if (reason === "tree") {
+            const job = createSummaryJob(this.options.taskManager, ctx.sessionManager, reason)
+            if (job === undefined) return true
+            this.turnCount = 0
+            return new Promise<boolean>((resolve) => {
+                job.resolve = resolve
+                if (!this.options.jobQueue.enqueue(job)) resolve(false)
+            })
+        }
+        const enqueued = await this.enqueueSummary(ctx.sessionManager, reason)
         this.turnCount = 0
+        return enqueued
     }
 
     shutDown(): void {
@@ -177,45 +179,20 @@ export class Tracker {
 
     private async enqueueSummary(sessionManager: ReadonlySessionManager, reason: SummaryReason): Promise<boolean> {
         const sessionId = sessionManager.getSessionId()
-        const result = createSummaryJob(this.options.taskManager, sessionManager, reason)
-        if (!result.ok) {
-            summaryLogger.debug("summary_noop", { sessionId, reason, cause: result.cause })
-            return false
-        }
-        const job = result.job
+        const job = createSummaryJob(this.options.taskManager, sessionManager, reason)
+        if (job === undefined) return false
         summaryLogger.info("summary_job_created", {
             sessionId,
             reason,
             endEntryId: job.endEntryId,
-            entryCount: result.job.entries.length,
         })
-
-        if (!this.options.useGate || (await gate(job))) {
-            const enqueued = this.options.jobQueue.enqueue(job)
-            if (enqueued) {
-                summaryLogger.info("summary_job_enqueued", { sessionId, endEntryId: job.endEntryId, reason })
-            } else {
-                summaryLogger.debug("summary_job_duplicate", { sessionId, endEntryId: job.endEntryId })
-            }
-            return enqueued
+        const enqueued = this.options.jobQueue.enqueue(job)
+        if (enqueued) {
+            summaryLogger.info("summary_job_enqueued", { sessionId, endEntryId: job.endEntryId, reason })
         } else {
-            summaryLogger.info("summary_job_skipped_by_gate", { sessionId, endEntryId: job.endEntryId })
-            this.options.taskManager.applySummaryAndAdvanceWatermark({
-                sessionId: job.sessionId,
-                title: job.taskTitle,
-                expectedRevision: job.expectedRevision,
-                expectedLastSummarizedEntryId: job.lastSummarizedEntryId ?? "",
-                endEntryId: job.endEntryId,
-                shouldUpdateTask: false,
-                patch: {},
-            })
-            summaryLogger.info("summary_db_applied", {
-                sessionId: job.sessionId,
-                endEntryId: job.endEntryId,
-                shouldUpdateTask: false,
-            })
-            return false
+            summaryLogger.debug("summary_job_duplicate", { sessionId, endEntryId: job.endEntryId })
         }
+        return enqueued
     }
 }
 
@@ -225,64 +202,118 @@ function hasCompletedAssistantTurn(ctx: ExtensionContext): boolean {
     return entry?.type === "message" && entry.message.role === "assistant" && entry.message.stopReason === "stop"
 }
 
-/** Why createSummaryJob could not produce a job. */
-type SummarySkipCause = "no_binding" | "task_deleted" | "no_increment" | "watermark_off_branch"
-
-type SummaryJobResult = { ok: true; job: SummaryJob } | { ok: false; cause: SummarySkipCause }
-
-function createSummaryJob(
+export function createSummaryJob(
     taskManager: TaskManager,
-    session: ReadonlySessionManager,
+    session: SummarySession,
     summaryReason: SummaryReason,
-): SummaryJobResult {
-    const sessid = session.getSessionId()
-    const binding = taskManager.getActiveBinding(sessid)
-    if (binding === undefined) {
-        return { ok: false, cause: "no_binding" }
-    }
-    const task = taskManager.getTask(binding.taskTitle)
-    if (task === undefined) {
-        return { ok: false, cause: "task_deleted" }
-    }
-
-    const branch = session.getBranch()
-    const summaryEntries = getSummaryEntries(branch, binding.lastSummarizedEntryId)
-    const endEntryId = summaryEntries.at(-1)?.id
-    if (endEntryId === undefined) {
-        const watermarkOnBranch =
-            binding.lastSummarizedEntryId === "" || branch.some((entry) => entry.id === binding.lastSummarizedEntryId)
-        return { ok: false, cause: watermarkOnBranch ? "no_increment" : "watermark_off_branch" }
-    }
-
+): SummaryJob | undefined {
+    const binding = taskManager.getActiveBinding(session.getSessionId())
+    if (binding === undefined) return undefined
     return {
-        ok: true,
-        job: {
-            sessionId: sessid,
-            taskTitle: task.title,
-            goal: task.goal,
-            nextAction: task.nextAction,
-            blocker: task.blocker,
-            expectedRevision: task.revision,
-            lastSummarizedEntryId: binding.lastSummarizedEntryId,
-            currentSummary: task.summary,
-            entries: summaryEntries,
-            summaryReason: summaryReason,
-            endEntryId: endEntryId,
-        },
+        sessionId: binding.sessionId,
+        taskTitle: binding.taskTitle,
+        summaryReason,
+        endEntryId: session.getLeafId() ?? "",
+        session,
     }
 }
 
-function getSummaryEntries(entries: SessionEntry[], lastSummarizedEntryId: string): SessionEntry[] {
-    // "" is the empty-session binding sentinel: nothing has been summarized yet,
-    // so the first summary covers the whole branch.
-    if (lastSummarizedEntryId === "") return entries
-    const index = entries.findIndex((entry) => entry.id === lastSummarizedEntryId)
-    // A real watermark that is not on the current branch means the branch moved
-    // (e.g. after /tree); do not enqueue from a stale range.
-    return index == -1 ? [] : entries.slice(index + 1)
+export function prepareSummaryJob(taskManager: TaskManager, job: SummaryJob): PreparedSummaryJob | undefined {
+    const task = taskManager.getTask(job.taskTitle)
+    if (task === undefined) throw new Error("Task not found")
+    const binding = taskManager.getActiveBinding(job.sessionId)
+    if (binding === undefined) throw new Error("Binding not found")
+
+    const increment = getSummaryIncrement(job.endEntryId, binding.lastSummarizedEntryId, (id) =>
+        job.session.getEntry(id),
+    )
+    if (increment.length === 0) return undefined
+
+    return Object.assign(job, {
+        goal: task.goal,
+        nextAction: task.nextAction,
+        blocker: task.blocker,
+        expectedRevision: task.revision,
+        lastSummarizedEntryId: binding.lastSummarizedEntryId,
+        currentSummary: task.summary,
+        entries: getSummaryMessages(increment),
+    }) as PreparedSummaryJob
 }
 
-async function gate(job: SummaryJob): Promise<boolean> {
+export function getSummaryIncrement(
+    endEntryId: string,
+    lastSummarizedEntryId: string,
+    getEntry: (id: string) => SessionEntry | undefined,
+): SessionEntry[] {
+    const branch = getBranch(endEntryId, getEntry)
+    if (lastSummarizedEntryId === "") return branch
+    const commonAncestorId = findCommonAncestor(branch, lastSummarizedEntryId, getEntry)
+    if (commonAncestorId === undefined) return branch
+    return branch.slice(branch.findIndex((entry) => entry.id === commonAncestorId) + 1)
+}
+
+export function findCommonAncestor(
+    branch: SessionEntry[],
+    entryId: string,
+    getEntry: (id: string) => SessionEntry | undefined,
+): string | undefined {
+    const branchIds = new Set(branch.map((entry) => entry.id))
+    let currentId: string | null = entryId
+    while (currentId !== null) {
+        const entry = getEntry(currentId)
+        if (entry === undefined) throw new Error(`Session entry not found: ${currentId}`)
+        if (branchIds.has(entry.id)) return entry.id
+        currentId = entry.parentId
+    }
+    return undefined
+}
+
+export function getSummaryMessages(entries: SessionEntry[]): SessionEntry[] {
+    return entries.filter(
+        (entry) => entry.type === "message" && (entry.message.role === "user" || entry.message.role === "assistant"),
+    )
+}
+
+export async function runPreparedJob(
+    taskManager: TaskManager,
+    summarizer: Summarizer,
+    job: PreparedSummaryJob,
+    useGate: boolean,
+    log: ReturnType<typeof summaryLogger.child>,
+): Promise<void> {
+    if (job.entries.length === 0 || (useGate && !(await gate(job)))) {
+        advanceWatermark(taskManager, job)
+        return
+    }
+    await summarizer.runSummaryAgent(job, log)
+}
+
+function getBranch(endEntryId: string, getEntry: (id: string) => SessionEntry | undefined): SessionEntry[] {
+    if (endEntryId === "") return []
+    const branch: SessionEntry[] = []
+    let entry = getEntry(endEntryId)
+    while (entry !== undefined) {
+        branch.push(entry)
+        if (entry.parentId === null) return branch.reverse()
+        entry = getEntry(entry.parentId)
+    }
+    throw new Error(`Session entry not found: ${endEntryId}`)
+}
+
+function advanceWatermark(taskManager: TaskManager, job: PreparedSummaryJob): void {
+    const applied = taskManager.applySummaryAndAdvanceWatermark({
+        sessionId: job.sessionId,
+        title: job.taskTitle,
+        expectedRevision: job.expectedRevision,
+        expectedLastSummarizedEntryId: job.lastSummarizedEntryId,
+        endEntryId: job.endEntryId,
+        shouldUpdateTask: false,
+        patch: {},
+    })
+    if (!applied) throw new Error("Failed to advance summary watermark")
+}
+
+async function gate(job: PreparedSummaryJob): Promise<boolean> {
     try {
         summaryLogger.debug("gate_eval_started", { sessionId: job.sessionId, endEntryId: job.endEntryId })
         const shouldEnqueue = await gateChecker(job)

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createBindTaskTool, registerBindTaskTool } from "../src/tools/bind-task.ts"
 import { createCreateTaskTool } from "../src/tools/create-task.ts"
-import { JobQueue, Tracker } from "../src/tracker.ts"
+import { JobQueue, prepareSummaryJob, Tracker } from "../src/tracker.ts"
 import {
     type FakeApi,
     type Harness,
@@ -58,13 +58,19 @@ describe("tracker_bind_task tool", () => {
     it('binds an empty session with the "" sentinel so the first summary covers the whole branch', async () => {
         await seedTask()
         const branch = branchFixture("plan", "work", "more", "done")
-        const sessionManager = createFakeSessionManager({ sessionFile: "/sessions/s1.jsonl", leafId: null, branch })
         const tool = createBindTaskTool(fakeApi.api, harness.taskManager)
-        await tool.execute("t1", { title: "deploy-api" }, noopSignal, undefined, createFakeContext(sessionManager))
+        await tool.execute(
+            "t1",
+            { title: "deploy-api" },
+            noopSignal,
+            undefined,
+            createFakeContext(createFakeSessionManager({ sessionFile: "/sessions/s1.jsonl", leafId: null })),
+        )
 
         expect(harness.taskManager.getActiveBinding("session-1")!.lastSummarizedEntryId).toBe("")
 
         // Drive the real Tracker path: the first flush must summarize the whole branch.
+        const sessionManager = createFakeSessionManager({ sessionFile: "/sessions/s1.jsonl", branch })
         const jobQueue = new JobQueue()
         const tracker = new Tracker({
             taskManager: harness.taskManager,
@@ -75,12 +81,16 @@ describe("tracker_bind_task tool", () => {
             maxIntervalMin: 120,
             useGate: false,
         })
-        await tracker.flush(createFakeContext(sessionManager), "tree")
+        const flush = tracker.flush(createFakeContext(sessionManager), "tree")
 
         const job = await jobQueue.dequeue()
         expect(job).toBeDefined()
-        expect(job!.entries).toEqual(branch)
         expect(job!.endEntryId).toBe(branch.at(-1)!.id)
+        expect(prepareSummaryJob(harness.taskManager, job!)!.entries.map((entry) => entry.id)).toEqual(
+            branch.map((entry) => entry.id),
+        )
+        jobQueue.complete(job!, true)
+        await expect(flush).resolves.toBe(true)
     })
 
     it("rejects an unknown task with a readable error and no side effects", async () => {

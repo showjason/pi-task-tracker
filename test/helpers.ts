@@ -108,14 +108,19 @@ export interface FakeSessionManagerOptions {
 
 export function createFakeSessionManager(options: FakeSessionManagerOptions = {}) {
     const sessionId = options.sessionId ?? "session-1"
-    const branch = options.branch ?? []
+    const branch = (options.branch ?? []).map((entry, index, entries) => ({
+        ...entry,
+        parentId: index === 0 ? null : entries[index - 1]!.id,
+    }))
+    const entries = new Map(branch.map((entry) => [entry.id, entry]))
     return {
         getSessionId: () => sessionId,
         getSessionFile: () => options.sessionFile,
-        getLeafId: () => options.leafId ?? null,
+        getLeafId: () => (options.leafId === undefined ? (branch.at(-1)?.id ?? null) : options.leafId),
         getCwd: () => options.cwd ?? "/tmp/project",
         getBranch: () => branch,
         getLeafEntry: () => branch.at(-1),
+        getEntry: (id: string) => entries.get(id),
     }
 }
 

@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import type { TrackerRuntimeOptions } from "../src/tracker.ts"
 import {
     type Harness,
     assistantEntry,
@@ -13,19 +12,6 @@ import {
 // affects a freshly imported module, and a static import would cache the real
 // one (with the real, network-bound gateChecker) for the whole file.
 
-const PROBE_ID = "__queue-probe__"
-
-async function expectNoJob(queue: {
-    enqueue(job: unknown): boolean
-    dequeue(): Promise<unknown>
-    complete(job: unknown): void
-}): Promise<void> {
-    queue.enqueue({ endEntryId: PROBE_ID })
-    const job = (await queue.dequeue()) as { endEntryId: string }
-    queue.complete(job)
-    expect(job?.endEntryId).toBe(PROBE_ID)
-}
-
 describe("Tracker gate integration", () => {
     let harness: Harness
 
@@ -33,7 +19,7 @@ describe("Tracker gate integration", () => {
     async function loadGatedTracker(gateChecker: ReturnType<typeof vi.fn>) {
         vi.doMock("../src/gate.ts", () => ({ gateChecker }))
         const module = await import("../src/tracker.ts")
-        return { Tracker: module.Tracker, JobQueue: module.JobQueue }
+        return module
     }
 
     function seedBoundSession(branch: ReturnType<typeof branchFixture>, baseline: string) {
@@ -57,72 +43,42 @@ describe("Tracker gate integration", () => {
         harness.cleanup()
     })
 
-    it("enqueues when the gate approves", async () => {
-        const gateChecker = vi.fn().mockResolvedValue(true)
-        const { Tracker, JobQueue } = await loadGatedTracker(gateChecker)
-        const jobQueue = new JobQueue()
-        const tracker = new Tracker({
-            taskManager: harness.taskManager,
-            jobQueue,
-            summarizer: { runSummaryAgent: vi.fn() } as never,
-            turnsThreshold: 1,
-            initialIntervalMin: 30,
-            maxIntervalMin: 120,
-            useGate: true,
-        } satisfies TrackerRuntimeOptions)
+    async function runPreparedJob(gateChecker: ReturnType<typeof vi.fn>) {
+        const tracker = await loadGatedTracker(gateChecker)
         const branch = settledBranch("q1", "a1")
+        const session = seedBoundSession(branch, branch[0]!.id)
+        const job = tracker.createSummaryJob(harness.taskManager, session, "turn")!
+        const preparedJob = tracker.prepareSummaryJob(harness.taskManager, job)!
+        const summarizer = { runSummaryAgent: vi.fn() }
+        const taskBefore = harness.taskManager.getTask("deploy-api")
 
-        await tracker.onAgentSettled(createFakeContext(seedBoundSession(branch, branch[0]!.id)))
+        await tracker.runPreparedJob(harness.taskManager, summarizer as never, preparedJob, true, {} as never)
+        return { branch, summarizer, taskBefore }
+    }
+
+    it("runs the summary agent when the gate approves", async () => {
+        const gateChecker = vi.fn().mockResolvedValue(true)
+        const { summarizer } = await runPreparedJob(gateChecker)
 
         expect(gateChecker).toHaveBeenCalledTimes(1)
-        const job = await jobQueue.dequeue()
-        expect(job).toBeDefined()
-        expect(job!.summaryReason).toBe("turn")
+        expect(summarizer.runSummaryAgent).toHaveBeenCalledTimes(1)
     })
 
     it("advances the watermark without updating the task when the gate rejects", async () => {
         const gateChecker = vi.fn().mockResolvedValue(false)
-        const { Tracker, JobQueue } = await loadGatedTracker(gateChecker)
-        const jobQueue = new JobQueue()
-        const tracker = new Tracker({
-            taskManager: harness.taskManager,
-            jobQueue,
-            summarizer: { runSummaryAgent: vi.fn() } as never,
-            turnsThreshold: 1,
-            initialIntervalMin: 30,
-            maxIntervalMin: 120,
-            useGate: true,
-        } satisfies TrackerRuntimeOptions)
-        const branch = settledBranch("q1", "a1")
-        const ctx = createFakeContext(seedBoundSession(branch, branch[0]!.id))
-        const taskBefore = harness.taskManager.getTask("deploy-api")
-
-        await tracker.onAgentSettled(ctx)
+        const { branch, summarizer, taskBefore } = await runPreparedJob(gateChecker)
 
         expect(gateChecker).toHaveBeenCalledTimes(1)
-        await expectNoJob(jobQueue)
+        expect(summarizer.runSummaryAgent).not.toHaveBeenCalled()
         expect(harness.taskManager.getTask("deploy-api")).toEqual(taskBefore)
         expect(harness.taskManager.getActiveBinding("session-1")!.lastSummarizedEntryId).toBe(branch.at(-1)!.id)
     })
 
     it("still enqueues when the gate throws (fail-open)", async () => {
         const gateChecker = vi.fn().mockRejectedValue(new Error("network down"))
-        const { Tracker, JobQueue } = await loadGatedTracker(gateChecker)
-        const jobQueue = new JobQueue()
-        const tracker = new Tracker({
-            taskManager: harness.taskManager,
-            jobQueue,
-            summarizer: { runSummaryAgent: vi.fn() } as never,
-            turnsThreshold: 1,
-            initialIntervalMin: 30,
-            maxIntervalMin: 120,
-            useGate: true,
-        } satisfies TrackerRuntimeOptions)
-        const branch = settledBranch("q1", "a1")
-
-        await tracker.onAgentSettled(createFakeContext(seedBoundSession(branch, branch[0]!.id)))
+        const { summarizer } = await runPreparedJob(gateChecker)
 
         expect(gateChecker).toHaveBeenCalledTimes(1)
-        expect(await jobQueue.dequeue()).toBeDefined()
+        expect(summarizer.runSummaryAgent).toHaveBeenCalledTimes(1)
     })
 })
