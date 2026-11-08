@@ -1,4 +1,4 @@
-import type { SessionEntry } from "@earendil-works/pi-coding-agent"
+import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent"
 
 export type TaskStatus = "pending" | "in_progress" | "done" | "todo" | "blocked"
 export type TaskPriority = "p0" | "p1" | "p2" | "p3"
@@ -38,15 +38,27 @@ export interface SessionBinding {
 export interface SummaryJob {
     sessionId: string
     taskTitle: string
+    summaryReason: SummaryReason
+    endEntryId: string
+    session: Pick<ExtensionContext["sessionManager"], "getEntry">
+    resolve?: (success: boolean) => void
+    goal?: string
+    nextAction?: string | null
+    blocker?: string | null
+    expectedRevision?: number
+    lastSummarizedEntryId?: string
+    currentSummary?: string | null
+    entries?: SessionEntry[]
+}
+
+export type PreparedSummaryJob = SummaryJob & {
     goal: string
     nextAction: string | null
     blocker: string | null
     expectedRevision: number
-    lastSummarizedEntryId: string | null
+    lastSummarizedEntryId: string
     currentSummary: string | null
     entries: SessionEntry[]
-    summaryReason: SummaryReason
-    endEntryId: string
 }
 
 export interface RuntimeTrackingState {

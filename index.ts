@@ -33,6 +33,8 @@ export default function (pi: ExtensionAPI) {
         summarizerProvider: trackerConfig.summarizerProvider,
         summarizerModel: trackerConfig.summarizerModel,
         jobQueue,
+        taskManager,
+        useGate: trackerConfig.useGate,
     })
     summarizer.start()
 
@@ -59,7 +61,8 @@ export default function (pi: ExtensionAPI) {
     })
 
     pi.on("session_before_tree", async (_event, ctx) => {
-        tracker.flush(ctx, "tree")
+        const success = await tracker.flush(ctx, "tree")
+        if (!success) return { cancel: true }
     })
 
     pi.on("session_before_fork", async (_event, ctx) => {
@@ -71,9 +74,9 @@ export default function (pi: ExtensionAPI) {
     })
 
     pi.on("session_shutdown", async (_event, ctx) => {
-        await tracker.flush(ctx, "quit")
-        await summarizer.stopAndWait(trackerConfig.summaryTimeoutMs)
         tracker.shutDown()
+        await summarizer.stopAndWait(trackerConfig.summaryTimeoutMs)
+        await tracker.flush(ctx, "quit")
     })
 }
 

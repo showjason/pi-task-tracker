@@ -1,5 +1,5 @@
 import { TypeSafeClient, choice, type JsonValue, type Questions, type SystemOneRequest } from "@typesafe-ai/sdk"
-import type { SummaryJob, SummaryReason } from "./type.ts"
+import type { PreparedSummaryJob, SummaryReason } from "./type.ts"
 import { summaryLogger } from "./logger.ts"
 
 const QUESTIONS = {
@@ -46,7 +46,7 @@ type GateState = {
     increments: JsonValue[]
 }
 
-function buildGateState(job: SummaryJob): GateState {
+function buildGateState(job: PreparedSummaryJob): GateState {
     return {
         task: {
             goal: job.goal,
@@ -58,28 +58,28 @@ function buildGateState(job: SummaryJob): GateState {
     }
 }
 
-function buildGatePrompt(job: SummaryJob): SystemOneRequest<typeof QUESTIONS> {
+function buildGatePrompt(job: PreparedSummaryJob): SystemOneRequest<typeof QUESTIONS> {
     return {
         state: buildGateState(job),
         questions: QUESTIONS,
     }
 }
 
-function isGateEligible(job: SummaryJob): boolean {
+function isGateEligible(job: PreparedSummaryJob): boolean {
     if (GATED_REASONS.has(job.summaryReason)) {
         return true
     }
     return false
 }
 
-async function fetchDecision(job: SummaryJob): Promise<boolean> {
+async function fetchDecision(job: PreparedSummaryJob): Promise<boolean> {
     const client = new TypeSafeClient()
     const response = await client.systemOne(buildGatePrompt(job))
     const decision = response.answers.summary_needed.choice === "changed" ? "enqueue" : "skip"
     return decision === "enqueue"
 }
 
-export async function gateChecker(job: SummaryJob): Promise<boolean> {
+export async function gateChecker(job: PreparedSummaryJob): Promise<boolean> {
     if (!isGateEligible(job)) {
         return true
     }

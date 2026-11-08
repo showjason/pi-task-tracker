@@ -121,6 +121,10 @@ The summary process compares the new session entries with the task goal and
 current task state. It can update status, priority, progress, summary, next
 action, and blocker. It does not update a task for unrelated conversation.
 
+A task may be bound to multiple sessions, but only one session should advance
+it at a time. Using multiple Pi processes to operate on the same session
+simultaneously is not supported.
+
 ### Isolated summary process
 
 For each summary job, the extension starts a separate, non-interactive `pi`
