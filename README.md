@@ -1,226 +1,142 @@
 # pi-task-tracker
 
-As an SRE I juggle multiple projects at once. They differ in tech stack, in
-the engineers I talk to, and in planning cycles. Every switch forces a
-context reload: where was I, what changed, what is blocked, what comes next.
-This constant re-remembering splits my attention and slows me down.
+`pi-task-tracker` helps you keep track of work that spans several Pi sessions.
+Bind a session to a task, then continue working normally. The extension records
+goal-relevant progress and gives you the current status, summary, next action,
+and blocker when you return.
 
-This extension binds each Pi session to a task and records goal-relevant
-progress automatically. When I return to a project, the task state is
-already there: status, summary, next action, and blockers. You resume instead
-of reconstructing.
+All task data stays in a local SQLite database. It does not require an account
+or a remote service.
 
-All data stays on my machine in a local SQLite database. No service, no
-account.
+## When to use it
 
-## Quick Start
+Use this extension when you:
 
-Install for your Pi account:
+- work on several projects or long-running tasks at the same time;
+- switch branches, sessions, or repositories and need to recover context;
+- want Pi to maintain concise task progress without manual status updates.
+
+Each task can have more than one session, but use only one Pi process to
+advance a task at a time.
+
+## Quick start
+
+### 1. Install
+
+Install the extension for your Pi account:
 
 ```sh
 pi install npm:@showjason/pi-task-tracker
 ```
 
-Confirm that Pi sees it:
+Or install it only for the current project:
 
 ```sh
-pi list
+pi install --local npm:@showjason/pi-task-tracker
 ```
 
-Start Pi in the project where you work, finish one normal turn, then ask Pi
-to create and bind a task:
+Run `pi list` to confirm that Pi can load the extension.
+
+### 2. Create and bind a task
+
+Start Pi in your project and use a prompt like this:
 
 ```text
 Create a task named "deploy-api-v2". Its goal is to deploy the new API to
 production. Bind this session to it.
 ```
 
-Continue working normally. The extension records progress only when it finds
-goal-relevant changes. Run `/tasks` at any time to inspect your tasks.
+After Pi binds the task, work as usual. The extension updates the task only
+when it finds progress that is relevant to the task goal.
 
-### Install for one project
+### 3. Check your tasks
 
-Run this from the project directory:
+Run `/tasks` to open the task list. Use the arrow keys to select a task and
+Enter to view its details. Press Escape or Ctrl-C to close the list.
 
-```sh
-pi install --local npm:@showjason/pi-task-tracker
-```
+## How it works
 
-Pi asks you to trust the project before it loads project-local extensions.
+The extension checks for progress after a configured number of completed turns,
+after an idle period, and when Pi changes branches, forks, switches sessions,
+or exits. It records only changes that relate to the bound task.
 
-### Install from git
+Use `/tasks` to review task state. It supports these shortcuts:
 
-```sh
-pi install git:github.com/showjason/pi-task-tracker
-```
+| Action | Keys |
+| --- | --- |
+| Select a task | Up / Down |
+| Open or close details | Enter |
+| Scroll details | `j` / `k` |
+| Filter by status | `1` all, `2` in progress, `3` pending, `4` todo, `5` done, `6` blocked |
+| Delete a task | `d`, then select **Delete** and press Enter |
 
-### Install from a checkout
+You cannot delete the task bound to the current session. Deletion is permanent.
 
-Use this when developing the extension:
+## Tools
 
-```sh
-git clone git@github.com:showjason/pi-task-tracker.git
-cd pi-task-tracker
-npm ci
-pi install "$PWD"
-```
+Pi can call these tools while you work. In normal use, describe the task in
+natural language and let Pi select the tool.
 
-Local packages keep using the checkout. Run `pi reload` after changing
-extension files.
+### `tracker_create_task`
 
-## Requirements
+Creates a tracked task. The task title must be unique.
 
-- Pi with package installation support. This extension is tested with
-  `@earendil-works/pi-coding-agent` 0.85.1.
-- Node.js 22.23.4 or later when Pi is installed through npm or used from source.
-- A working Pi model provider. Run `/login` in Pi, or configure the provider
-  before using the extension.
-- The `pi` command must be on `PATH`. The extension starts a child Pi process
-  to write summaries.
+| Parameter | Required | Description |
+| --- | --- | --- |
+| `title` | Yes | Unique task title |
+| `goal` | No | Definition of done |
+| `description` | No | Task context and scope |
+| `jiraKeys` | No | Related Jira issue keys, as a string array |
+| `priority` | No | `p0`, `p1`, `p2`, or `p3`; default: `p2` |
+| `dueDate` | No | Due date in `YYYY-MM-DD` format |
 
-Install only sources you trust. Pi extensions run with the permissions of the
-Pi process and can read project files, session content, and local
-credentials.
+### `tracker_bind_task`
 
-## Features
+Binds the current Pi session to an existing task.
 
-### Task management with `/tasks`
+| Parameter | Required | Description |
+| --- | --- | --- |
+| `title` | Yes | Title of the existing task |
 
-Run `/tasks` to open the task list.
+### `tracker_apply_summary`
 
-| Action                     | Keys                                                                   |
-| -------------------------- | ---------------------------------------------------------------------- |
-| Select a task              | Up / Down arrows                                                       |
-| View or close task details | Enter                                                                  |
-| Scroll long details        | `j` / `k`                                                              |
-| Filter by status           | `1` all, `2` in progress, `3` pending, `4` todo, `5` done, `6` blocked |
-| Delete the selected task   | `d`, use Left / Right to select **Delete**, then Enter                 |
-| Close the task list        | Escape or Ctrl-C                                                       |
-
-The task bound to the current session cannot be deleted. Deletion is
-permanent.
-
-The extension registers these model tools:
-
-| Tool                    | Purpose                                                             |
-| ----------------------- | ------------------------------------------------------------------- |
-| `tracker_create_task`   | Create a local task.                                                |
-| `tracker_bind_task`     | Bind the current Pi session to an existing task.                    |
-| `tracker_apply_summary` | Internal tool used by the summary process. Do not call it directly. |
-
-### Automatic progress tracking
-
-The extension tracks completed assistant turns. A summary is written when one
-of these events occurs:
-
-- the configured completed-turn threshold is reached;
-- the session remains idle until the configured timer fires;
-- Pi changes tree branch, forks, switches sessions, or exits.
-
-The summary process compares the new session entries with the task goal and
-current task state. It can update status, priority, progress, summary, next
-action, and blocker. It does not update a task for unrelated conversation.
-
-### Isolated summary process
-
-For each summary job, the extension starts a separate, non-interactive `pi`
-process. The child runs only `tracker_apply_summary`; it cannot use
-extensions or Pi built-in tools.
-
-The child inherits the Pi process environment. It reuses Pi's configured
-provider definitions, model definitions, and login credentials. The
-`SUMMARIZER_PROVIDER` and `SUMMARIZER_MODEL` settings select the provider and
-model from that Pi configuration. They do not automatically follow a later
-model selection in the parent session.
+This is an internal tool for the isolated summary process. Do not call it
+directly.
 
 ## Configuration
 
-Set environment variables before starting Pi. The defaults are suitable for
-normal interactive use. The default tracker home is `~/.pi/agent/tracker`.
-When Pi sets `PI_CODING_AGENT_DIR`, the extension uses
-`$PI_CODING_AGENT_DIR/tracker` instead.
+Set environment variables before you start Pi. The default settings work for
+normal interactive use.
 
-| Variable               |                        Default | Meaning                                                              |
-| ---------------------- | -----------------------------: | -------------------------------------------------------------------- |
-| `TRACKER_HOME`         | `$PI_CODING_AGENT_DIR/tracker` | Directory for the database and logs.                                 |
-| `TURNS_THRESHOLD`      |                            `3` | Completed turns before a summary check.                              |
-| `INITIAL_INTERVAL_MIN` |                           `30` | First idle check interval.                                           |
-| `MAX_INTERVAL_MIN`     |                          `120` | Maximum idle interval after no useful increment.                     |
-| `SUMMARIZER_PROVIDER`  |                       `openai` | Pi provider for the summary child process.                           |
-| `SUMMARIZER_MODEL`     |            `DeepSeek-V4-Flash` | Pi model for summaries.                                              |
-| `USE_GATE`             |                        `false` | Use JEV to decide whether a turn or timer increment needs a summary. |
-| `SUMMARY_TIMEOUT_MS`   |                        `60000` | Maximum shutdown wait for a summary process.                         |
-| `LOG_LEVEL`            |                         `info` | `error`, `warn`, `info`, or `debug`.                                 |
-| `LOG_DIR`              |           `$TRACKER_HOME/logs` | Log directory.                                                       |
+| Variable | Default | Description |
+| --- | --- | --- |
+| `TRACKER_HOME` | `$PI_CODING_AGENT_DIR/tracker` | Directory for the local database and logs |
+| `TURNS_THRESHOLD` | `3` | Completed turns before a summary check |
+| `INITIAL_INTERVAL_MIN` | `30` | First idle check interval, in minutes |
+| `MAX_INTERVAL_MIN` | `120` | Maximum idle interval, in minutes |
+| `SUMMARIZER_PROVIDER` | `openai` | Pi provider for summaries |
+| `SUMMARIZER_MODEL` | `DeepSeek-V4-Flash` | Pi model for summaries |
+| `USE_GATE` | `false` | Use JEV to decide if a summary is needed |
+| `SUMMARY_TIMEOUT_MS` | `60000` | Maximum wait for a summary process, in milliseconds |
+| `LOG_LEVEL` | `info` | `error`, `warn`, `info`, or `debug` |
+| `LOG_DIR` | `$TRACKER_HOME/logs` | Log directory |
 
-For a short manual test:
+By default, the database is at `~/.pi/agent/tracker/tracker.db`. When Pi sets
+`PI_CODING_AGENT_DIR`, the extension uses `$PI_CODING_AGENT_DIR/tracker`
+instead.
 
-```sh
-export TRACKER_HOME="$HOME/.tracker-test"
-export TURNS_THRESHOLD=1
-export INITIAL_INTERVAL_MIN=1
-export MAX_INTERVAL_MIN=2
-pi
-```
+## Requirements
 
-Delete the test directory after the test if it is no longer needed:
+- Pi with extension package installation support. This project is tested with
+  `@earendil-works/pi-coding-agent` 0.85.1.
+- Node.js 22.23.4 or later when Pi is installed with npm or run from source.
+- A configured Pi model provider. Use `/login` or configure a provider before
+  you start Pi.
+- The `pi` command must be on `PATH`.
 
-```sh
-rm -rf "$HOME/.tracker-test"
-```
-
-## Data and Logs
-
-By default, the extension creates:
-
-```text
-~/.pi/agent/tracker/
-  tracker.db
-  logs/
-    tracker/
-    summary/
-```
-
-Inspect the current tasks with SQLite:
-
-```sh
-sqlite3 ~/.pi/agent/tracker/tracker.db \
-  "SELECT title, status, priority, revision, substr(summary, 1, 80) FROM tasks;"
-```
-
-Follow summary failures while testing:
-
-```sh
-tail -f ~/.pi/agent/tracker/logs/summary/*.log
-```
-
-## Troubleshooting
-
-| Symptom                            | Check                                                                                                                    |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `pi list` does not show tracker    | Re-run the install command and check that the source is reachable.                                                       |
-| Pi reports an extension load error | Run `node --version`, then check `npm run check` from a checkout. Invalid environment-variable values also stop startup. |
-| No task appears in `/tasks`        | Ask Pi to create the task first. The command does not create tasks itself.                                               |
-| Binding fails for a new session    | Finish one normal assistant response, then bind again.                                                                   |
-| Summaries do not update tasks      | Check that Pi has a logged-in provider, that `pi` is on `PATH`, and inspect `$TRACKER_HOME/logs/summary/`.               |
-
-## Update and Remove
-
-For an npm package install:
-
-```sh
-pi update --extensions
-pi remove npm:@showjason/pi-task-tracker
-```
-
-For a local checkout, remove the same path that you installed:
-
-```sh
-pi remove "$PWD"
-```
-
-Removing the package does not delete `TRACKER_HOME`. Remove that directory
-separately only when you also want to delete local task data and logs.
+Install extensions only from sources you trust. Extensions run with the same
+permissions as Pi and can access project files, session content, and local
+credentials.
 
 ## Development
 
@@ -229,9 +145,6 @@ npm ci
 npm run check
 npm test
 ```
-
-The test suite uses temporary SQLite databases and fakes the summary process.
-It does not require a model provider.
 
 ## License
 
