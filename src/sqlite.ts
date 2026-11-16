@@ -142,6 +142,26 @@ interface SessionBindingRow {
     last_summarized_entry_id: string
 }
 
+export const TASK_SEARCH_RESULT_LIMIT = 5
+
+export interface FindTasksInput {
+    /**
+     * User-provided memory or keywords.
+     * It must contain non-whitespace text.
+     */
+    query: string
+}
+
+export interface FoundTask {
+    task: Task
+    relevanceScore: number
+}
+
+export interface FindTasksResult {
+    query: string
+    tasks: readonly FoundTask[]
+}
+
 export class TaskManager {
     private readonly db: DatabaseSync
 
